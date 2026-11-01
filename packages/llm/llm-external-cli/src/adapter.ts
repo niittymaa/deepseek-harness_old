@@ -22,12 +22,13 @@ import { cliEffortLevels, discoverCliModels, mergeModels } from './catalog.ts'
 export const DEFAULT_CONTEXT_WINDOW = 128000
 
 /** Known preset names mapped to friendly titles. */
-const PRESET_NAMES: Record<string, string> = {
+const KNOWN_CLI_NAMES = {
   agy: 'Agy CLI',
   claude: 'Claude Code CLI',
   codex: 'Codex CLI',
   copilot: 'GitHub Copilot CLI',
-}
+} as const
+const PRESET_NAMES: Record<string, string> = KNOWN_CLI_NAMES
 
 /** Refuse ambiguous configured catalogs before publishing model choices. */
 function validateCatalogs(config: ExternalCliOptions): void {
@@ -145,13 +146,9 @@ export class ExternalCliAdapter extends LlmAdapter {
       }
 
       // When no user profiles are configured in settings yet, list known CLI tools
-      const known = ['agy', 'codex', 'claude', 'copilot']
-      const models: LlmModelInfo[] = known.map(id => ({
-        provider,
-        id,
-        name: PRESET_NAMES[id] ?? `${id.charAt(0).toUpperCase() + id.slice(1)} CLI`,
-      }))
-      if (this.config.command !== undefined && !known.includes(this.config.command.toLowerCase())) {
+      const known = ['agy', 'codex', 'claude', 'copilot'] as const
+      const models: LlmModelInfo[] = known.map(id => ({ provider, id, name: KNOWN_CLI_NAMES[id] }))
+      if (this.config.command !== undefined && !(known as readonly string[]).includes(this.config.command.toLowerCase())) {
         models.unshift({
           provider,
           id: this.config.command,

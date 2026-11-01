@@ -482,9 +482,7 @@ export async function* streamExternalCli(
       },
     }
   } finally {
-    if (timeoutTimer !== undefined) {
-      clearTimeout(timeoutTimer)
-    }
+    clearTimeout(timeoutTimer)
     if (options.signal !== undefined) {
       options.signal.removeEventListener('abort', abortListener)
     }

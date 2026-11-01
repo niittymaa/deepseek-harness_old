@@ -35,13 +35,13 @@ export const inject = ['llm']
 export function apply(ctx: Context, config: PluginConfig = {}): void {
   ctx.inject(['settings'], (child) => { child.effect(() => child.settings.configure({ auto: false }, ctx.fiber)) })
 
-  const getEffectiveConfig = (): ExternalCliOptions => {
+  const getEffectiveConfig = (): ExternalCliOptions & { providers: Record<string, ExternalCliProviderProfile> } => {
     const rawProviders = config.providers !== undefined
       ? typeof (config.providers as { get?: () => unknown }).get === 'function'
         ? (config.providers as { get: () => unknown }).get()
         : config.providers
       : undefined
-    const effective: ExternalCliOptions = {
+    const effective: ExternalCliOptions & { providers: Record<string, ExternalCliProviderProfile> } = {
       providers: (rawProviders as Record<string, ExternalCliProviderProfile> | undefined) ?? {},
     }
     if (config.command !== undefined) effective.command = config.command
@@ -71,7 +71,7 @@ export function apply(ctx: Context, config: PluginConfig = {}): void {
     effectiveConfig = getEffectiveConfig()
     adapter.updateConfig(effectiveConfig)
 
-    const configuredIds = Object.keys(effectiveConfig.providers ?? {})
+    const configuredIds = Object.keys(effectiveConfig.providers)
     const hasTopLevelCommand = effectiveConfig.command !== undefined
     const hasAnyConfig = hasTopLevelCommand || configuredIds.length > 0
     const allRoutes = hasAnyConfig
@@ -102,7 +102,7 @@ export function apply(ctx: Context, config: PluginConfig = {}): void {
     }
     for (const id of configuredIds) {
       if (hasTopLevelCommand && id === primaryProvider) continue
-      const profile = effectiveConfig.providers?.[id]
+      const profile = effectiveConfig.providers[id]
       directoryEntries.push({
         provider: id,
         displayName: profile?.displayName ?? `${id.charAt(0).toUpperCase() + id.slice(1)} CLI`,
@@ -123,7 +123,7 @@ export function apply(ctx: Context, config: PluginConfig = {}): void {
 
   ensureRegistrations()
   ctx.llm.registerModelDiscovery(name, async (request, signal) => {
-    const profile = getEffectiveConfig().providers?.[request.provider ?? '']
+    const profile = getEffectiveConfig().providers[request.provider ?? '']
     if (profile === undefined) return []
     const discovered = await discoverCliModels(profile, signal)
     return mergeModels(discovered, profile.models ?? [])
