@@ -43,6 +43,16 @@ param(
 Set-Location -Path $PSScriptRoot
 . (Join-Path $PSScriptRoot "scripts/launcher-processes.ps1")
 
+# Run the pnpm version package.json pins (packageManager). A globally
+# installed older pnpm reinstalls node_modules from scratch in its own layout
+# and rewrites pnpm-lock.yaml in its own format. A function takes precedence
+# over the executable on PATH for every `pnpm` call below.
+if (Get-Command corepack -ErrorAction SilentlyContinue) {
+    function pnpm { & corepack pnpm @args }
+} else {
+    Write-Host "[!] corepack was not found; using the pnpm on PATH, which must match packageManager in package.json." -ForegroundColor Yellow
+}
+
 Write-Host "==========================================" -ForegroundColor Cyan
 Write-Host "       DeepSeek Harness Launcher          " -ForegroundColor Cyan
 Write-Host "==========================================" -ForegroundColor Cyan
