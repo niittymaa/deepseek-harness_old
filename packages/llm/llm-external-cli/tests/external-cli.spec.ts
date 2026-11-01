@@ -2,8 +2,9 @@ import { describe, expect, it } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
 import { BlockAssembler, LlmRuntime, createUserMessage, ReasoningEffortId, type GenerateOptions } from '@deepseek-ai/dsh-llm'
 import { ExternalCliAdapter, DEFAULT_CONTEXT_WINDOW } from '../src/adapter.ts'
-import { formatPrompt, parseThinkTags, resolveCommandAndArgs } from '../src/process.ts'
+import { formatPrompt, parseAgyStream, parseThinkTags, resolveCommandAndArgs } from '../src/process.ts'
 import * as LlmExternalCli from '../src/index.ts'
+import { cliChildEnv } from '../src/env.ts'
 
 describe('formatPrompt', () => {
   it('formats single user text message for completion mode without role wrapper', () => {
@@ -71,15 +72,15 @@ describe('resolveCommandAndArgs', () => {
 
     const codex = resolveCommandAndArgs({}, { provider: 'external-cli', model: 'codex', messages: [] })
     expect(codex.command).toBe('codex')
-    expect(codex.args).toEqual(['exec'])
+    expect(codex.args).toEqual(['exec', '--skip-git-repo-check'])
 
     const agy = resolveCommandAndArgs({}, { provider: 'external-cli', model: 'agy', messages: [] })
     expect(agy.command).toBe('agy')
-    expect(agy.args).toEqual(['--print', '-'])
+    expect(agy.args).toEqual(['--input-format', 'stream-json', '--output-format', 'stream-json', '--print='])
 
     const copilot = resolveCommandAndArgs({}, { provider: 'external-cli', model: 'copilot', messages: [] })
     expect(copilot.command).toBe('copilot')
-    expect(copilot.args).toEqual([])
+    expect(copilot.args).toEqual(['--silent'])
   })
 })
 
@@ -467,10 +468,10 @@ describe('Cordis plugin registration', () => {
 
 describe('CLI model selection', () => {
   it.each([
-    ['codex', ['exec', '--model', 'chosen', '-c', 'model_reasoning_effort=high']],
+    ['codex', ['exec', '--skip-git-repo-check', '--model', 'chosen', '-c', 'model_reasoning_effort=high']],
     ['claude', ['--print', '--model', 'chosen', '--effort', 'high']],
-    ['agy', ['--print', '-', '--model', 'chosen', '--effort', 'high']],
-    ['copilot', ['--model', 'chosen', '--reasoning-effort', 'high']],
+    ['agy', ['--input-format', 'stream-json', '--output-format', 'stream-json', '--print=', '--model', 'chosen', '--effort', 'high']],
+    ['copilot', ['--silent', '--model', 'chosen', '--reasoning-effort', 'high']],
   ] as const)('passes the selected model and effort to %s', (command, expected) => {
     const result = resolveCommandAndArgs({ providers: { route: {
       command, models: [{ id: 'chosen', reasoningEfforts: { high: 'high' } }],
@@ -537,14 +538,14 @@ it.each([
 it('leaves the CLI model and effort defaults untouched for the default entry', () => {
   expect(resolveCommandAndArgs({ providers: { codex: { command: 'codex', args: ['exec'] } } }, {
     provider: 'codex', model: 'codex', messages: [],
-  })).toEqual({ command: 'codex', args: ['exec'] })
+  })).toEqual({ command: 'codex', args: ['exec', '--skip-git-repo-check'] })
 })
 
 it.each([
-  ['agy', ['--print', '-'], ['--print', '-', '--effort', 'high']],
+  ['agy', ['--print', '-'], ['--input-format', 'stream-json', '--output-format', 'stream-json', '--print=', '--effort', 'high']],
   ['claude', ['--print'], ['--print', '--effort', 'high']],
-  ['codex', ['exec'], ['exec', '-c', 'model_reasoning_effort=high']],
-  ['copilot', [], ['--reasoning-effort', 'high']],
+  ['codex', ['exec'], ['exec', '--skip-git-repo-check', '-c', 'model_reasoning_effort=high']],
+  ['copilot', [], ['--silent', '--reasoning-effort', 'high']],
 ] as const)('sends the chosen level to the %s default entry', (route, args, expected) => {
   expect(resolveCommandAndArgs({ providers: { [route]: { command: route, args: [...args] } } }, {
     provider: route, model: route, reasoningEffort: ReasoningEffortId('high'), messages: [],
@@ -554,13 +555,13 @@ it.each([
 it('sends the chosen level for an alias entry that names a configured route', () => {
   expect(resolveCommandAndArgs({ providers: { agy: { command: 'agy' } } }, {
     provider: 'cli', model: 'agy', reasoningEffort: ReasoningEffortId('medium'), messages: [],
-  }).args).toEqual(['--print', '-', '--effort', 'medium'])
+  }).args).toEqual(['--input-format', 'stream-json', '--output-format', 'stream-json', '--print=', '--effort', 'medium'])
 })
 
 it('uses configured effort arguments for the default entry', () => {
   expect(resolveCommandAndArgs({ providers: { agy: { command: 'agy', effortArgs: ['--reasoning-effort', '{effort}'] } } }, {
     provider: 'agy', model: 'agy', reasoningEffort: ReasoningEffortId('low'), messages: [],
-  }).args).toEqual(['--print', '-', '--reasoning-effort', 'low'])
+  }).args).toEqual(['--input-format', 'stream-json', '--output-format', 'stream-json', '--print=', '--reasoning-effort', 'low'])
 })
 
 it('refuses a level the CLI default does not accept', () => {
@@ -584,7 +585,7 @@ it('refuses a level when the CLI arguments already override the effort', () => {
 it('supports an explicit Off entry without sending an effort option', () => {
   expect(resolveCommandAndArgs({ providers: { codex: { command: 'codex', models: [{ id: 'chosen', reasoningEfforts: { off: null } }] } } }, {
     provider: 'codex', model: 'chosen', reasoningEffort: ReasoningEffortId('off'), messages: [],
-  }).args).toEqual(['exec', '--model', 'chosen'])
+  }).args).toEqual(['exec', '--skip-git-repo-check', '--model', 'chosen'])
 })
 
 
@@ -617,5 +618,28 @@ it('withdraws CLI routes, settings entries and discovery when the plugin unloads
 it('uses the explicit CLI protocol for default arguments when the executable is a wrapper', () => {
   expect(resolveCommandAndArgs({ providers: { custom: {
     command: 'my-wrapper', cliType: 'codex', models: [{ id: 'chosen' }],
-  } } }, { provider: 'custom', model: 'chosen', messages: [] }).args).toEqual(['exec', '--model', 'chosen'])
+  } } }, { provider: 'custom', model: 'chosen', messages: [] }).args).toEqual(['exec', '--skip-git-repo-check', '--model', 'chosen'])
+})
+
+describe('cliChildEnv', () => {
+  it('drops a parent Claude Code session identity', () => {
+    const env = cliChildEnv({ PATH: 'p', CLAUDECODE: '1', CLAUDE_CODE_OAUTH_TOKEN: 't', CLAUDE_CODE_SESSION_ID: 's', CLAUDE_PID: '1', AI_AGENT: 'x', ANTHROPIC_API_KEY: 'k' })
+    expect(env).toEqual({ PATH: 'p', ANTHROPIC_API_KEY: 'k' })
+  })
+
+  it('keeps a token the user exported outside a Claude Code session', () => {
+    const env = { PATH: 'p', CLAUDE_CODE_OAUTH_TOKEN: 't' }
+    expect(cliChildEnv(env)).toBe(env)
+  })
+})
+
+describe('parseAgyStream', () => {
+  it('reads the reply from the final result event', () => {
+    const out = '{"event":"init"}\n{"event":"result","result":{"status":"SUCCESS","response":"51\\n"}}\n'
+    expect(parseAgyStream(out)).toEqual({ response: '51\n' })
+  })
+
+  it('reports the error of a failed run', () => {
+    expect(parseAgyStream('{"event":"result","result":{"status":"ERROR","error":"denied"}}')).toEqual({ error: 'denied' })
+  })
 })

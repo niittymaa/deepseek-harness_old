@@ -9,9 +9,16 @@ import type { ContentBlock, GenerateOptions, StreamChunk, TokenUsage } from '@de
 import { LlmError } from '@deepseek-ai/dsh-llm'
 import type { ExternalCliOptions, ExternalCliProviderProfile } from './config.ts'
 import { cliEffortLevels, cliType } from './catalog.ts'
+import { cliChildEnv } from './env.ts'
 
-/** Default execution timeout in milliseconds. */
-export const DEFAULT_TIMEOUT_MS = 120000
+/**
+ * Default execution timeout in milliseconds. A CLI turn runs the CLI's own
+ * agent loop with its tools, which routinely outlasts a plain model reply.
+ */
+export const DEFAULT_TIMEOUT_MS = 30 * 60_000
+
+/** Agy print-mode options that read the prompt as one stream-json message from stdin. */
+const AGY_STREAM_ARGS = ['--input-format', 'stream-json', '--output-format', 'stream-json', '--print=']
 
 /**
  * Format message content blocks into plain text for CLI transmission.
@@ -133,7 +140,7 @@ export function resolveCommandAndArgs(
   if (args === undefined) {
     const cmdBase = profile?.cliType ?? command.toLowerCase()
     if (cmdBase.includes('agy')) {
-      args = ['--print', '-']
+      args = [...AGY_STREAM_ARGS]
     } else if (cmdBase.includes('claude')) {
       args = ['--print']
     } else if (cmdBase.includes('codex')) {
@@ -151,6 +158,7 @@ export function resolveCommandAndArgs(
   if (profile !== undefined && options.provider !== 'cli' && !cliDefault && selected === undefined) {
     throw new LlmError('The selected CLI model is unavailable. Select a model from the chat menu.', 'CLI_MODEL_UNAVAILABLE')
   }
+  args = withHeadlessDefaults(cliType({ ...profile, command }), args)
   const effort = options.reasoningEffort
   if (profile !== undefined && selected !== undefined) {
     assertNoOverrides(args)
@@ -174,6 +182,61 @@ export function resolveCommandAndArgs(
     args.push(...effortArgs(cliType({ ...profile, command }), profile, effort))
   }
   return { command, args }
+}
+
+/**
+ * Make the configured arguments run the CLI headless the way it runs in a
+ * terminal. Agy treats `--print -` as the literal prompt "-" and never reads
+ * stdin, so that form becomes its stream-json mode; Codex refuses to run
+ * outside a trusted Git directory; Copilot otherwise mixes its banner and
+ * usage statistics into the reply.
+ * @param kind - CLI dialect resolved for the route.
+ * @param args - Configured base arguments.
+ * @returns Arguments for the headless run.
+ */
+function withHeadlessDefaults(kind: NonNullable<ExternalCliProviderProfile['cliType']>, args: string[]): string[] {
+  const has = (...names: string[]): boolean => args.some(arg => names.some(name => arg === name || arg.startsWith(`${name}=`)))
+  switch (kind) {
+    case 'agy': {
+      const at = args.findIndex((arg, index) => (arg === '--print' || arg === '-p') && args[index + 1] === '-')
+      return at === -1 ? args : [...args.slice(0, at), ...AGY_STREAM_ARGS, ...args.slice(at + 2)]
+    }
+    case 'codex':
+      return args[0] === 'exec' && !has('--skip-git-repo-check') ? [...args, '--skip-git-repo-check'] : args
+    case 'copilot':
+      return has('-s', '--silent') ? args : [...args, '--silent']
+    default:
+      return args
+  }
+}
+
+/**
+ * Whether the arguments run Agy's stream-json print mode.
+ * @param args - Resolved arguments.
+ * @returns True when stdin and stdout carry stream-json events.
+ */
+export function isAgyStream(args: readonly string[]): boolean {
+  return args.some((arg, index) => arg === '--input-format' && args[index + 1] === 'stream-json')
+}
+
+/**
+ * Read Agy's final result event from its stream-json output.
+ * @param stdout - Complete standard output.
+ * @returns The reply text, or the error the CLI reported.
+ */
+export function parseAgyStream(stdout: string): { response: string } | { error: string } {
+  for (const line of stdout.split(/\r?\n/).reverse()) {
+    if (!line.trim().startsWith('{')) continue
+    try {
+      const event = JSON.parse(line) as { event?: string; result?: { status?: string; response?: string; error?: string } }
+      if (event.event !== 'result' || event.result === undefined) continue
+      if (event.result.status === 'SUCCESS') return { response: event.result.response ?? '' }
+      return { error: event.result.error ?? `Agy finished with status ${event.result.status ?? 'unknown'}` }
+    } catch {
+      continue
+    }
+  }
+  return { error: stdout.trim() || 'Agy returned no result event' }
 }
 
 /**
@@ -222,6 +285,8 @@ export async function* streamExternalCli(
   const profile = config.providers?.[options.provider] ?? config.providers?.[options.model]
   const prompt = formatPrompt(options)
   const { command, args } = resolveCommandAndArgs(config, options)
+  const agyStream = isAgyStream(args)
+  const input = agyStream ? `${JSON.stringify({ event: 'user', message: { content: prompt } })}\n` : prompt
   const shell = profile?.shell ?? config.shell ?? false
 
   let proc: ReturnType<typeof spawn>
@@ -229,6 +294,7 @@ export async function* streamExternalCli(
     proc = spawn(command, args, {
       stdio: ['pipe', 'pipe', 'pipe'],
       shell,
+      env: cliChildEnv(process.env),
     })
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : String(error)
@@ -260,7 +326,7 @@ export async function* streamExternalCli(
   proc.stdin?.on('error', () => {})
 
   try {
-    proc.stdin?.write(prompt, 'utf8')
+    proc.stdin?.write(input, 'utf8')
     proc.stdin?.end()
   } catch {
     // Child process closed early
@@ -341,7 +407,16 @@ export async function* streamExternalCli(
       return
     }
 
-    const { reasoning, content } = parseThinkTags(stdoutText)
+    let replyText = stdoutText
+    if (agyStream) {
+      const result = parseAgyStream(stdoutText)
+      if ('error' in result) {
+        yield { type: 'finish', reason: { kind: 'error', failure: { code: 'CLI_EXECUTION_ERROR', message: `CLI command "${command}" failed: ${result.error}` } } }
+        return
+      }
+      replyText = result.response
+    }
+    const { reasoning, content } = parseThinkTags(replyText)
     if (content.length === 0 && (reasoning === undefined || reasoning.length === 0)) {
       yield {
         type: 'finish',
@@ -369,7 +444,7 @@ export async function* streamExternalCli(
     yield { type: 'block-end', index: blockIndex, block: { type: 'text', text: content } }
 
     const inputTokens = Math.max(1, Math.ceil(prompt.length / 4))
-    const outputTokens = Math.max(1, Math.ceil(stdoutText.length / 4))
+    const outputTokens = Math.max(1, Math.ceil(replyText.length / 4))
     const usage: TokenUsage = {
       inputTokens,
       outputTokens,

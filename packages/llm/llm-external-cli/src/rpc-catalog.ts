@@ -4,6 +4,7 @@
 import { spawn } from 'node:child_process'
 import { once } from 'node:events'
 import { LlmError } from '@deepseek-ai/dsh-llm'
+import { cliChildEnv } from './env.ts'
 import { DEFAULT_DISCOVERY_BYTES, DEFAULT_DISCOVERY_TIMEOUT_MS } from './config.ts'
 import type { ExternalCliModel, ExternalCliProviderProfile } from './config.ts'
 
@@ -197,7 +198,7 @@ export async function discoverRpcModels(
   signal?: AbortSignal,
 ): Promise<ExternalCliModel[]> {
   if (signal?.aborted === true) throw new LlmError('CLI model discovery was cancelled.', 'ABORTED')
-  const child = spawn(profile.command ?? protocol, [...ARGS[protocol]], { stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true, shell: profile.shell ?? false })
+  const child = spawn(profile.command ?? protocol, [...ARGS[protocol]], { stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true, shell: profile.shell ?? false, env: cliChildEnv(process.env) })
   const closed = once(child, 'close')
   // The operation promise owns failure; this listener only keeps teardown quiet.
   void closed.catch(() => {})
