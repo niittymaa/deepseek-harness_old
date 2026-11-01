@@ -1,9 +1,0 @@
-- id: llm-replay
-  disabled: true
-- id: llm-external-cli
-  config:
-    provider: deepseek-official
-    command: node
-    args: ['-e', 'process.stdin.resume(); process.stdin.on("end", () => process.stderr.write("Individual quota reached."))']
-- id: tool-bash
-  disabled: true

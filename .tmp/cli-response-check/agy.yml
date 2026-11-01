@@ -1,3 +1,0 @@
-- id: llm-external-cli
-  config:
-    command: agy

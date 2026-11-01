@@ -1,4 +1,0 @@
-- id: llm-external-cli
-  config:
-    command: node
-    args: ['-e', 'process.stdin.resume();process.stdin.on("end",()=>process.stderr.write("Individual quota reached. Resets in 70h14m29s."))']

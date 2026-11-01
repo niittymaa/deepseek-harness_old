@@ -1,8 +1,0 @@
-version: 1
-scenario: external-cli-empty-output
-profile: headless
-composition: default
-recording: authored
-header:
-  class: external-cli
-  pin: true
