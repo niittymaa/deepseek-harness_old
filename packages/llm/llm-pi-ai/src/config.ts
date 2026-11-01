@@ -24,6 +24,7 @@ import type { ResolvedRetryPolicy, RetryPolicyConfig } from '@deepseek-ai/dsh-ll
 import { deepEqualJson } from '@deepseek-ai/dsh-util-values'
 import {
   CACHE_CONTROL_FORMATS,
+  catalogProvider,
   CHAT_TEMPLATE_VARS,
   MAX_TOKENS_FIELDS,
   MODALITIES,
@@ -42,6 +43,7 @@ import type {
   RouteCatalog,
 } from './catalog.ts'
 import { buildProvider, supportedProtocols } from './provider.ts'
+import { DISCOVERY_PROTOCOLS } from './discovery.ts'
 
 /** Default maximum idle interval while an adapter stream read is outstanding. */
 export const DEFAULT_STREAM_IDLE_TIMEOUT_MS = 300_000
@@ -108,6 +110,19 @@ export interface PiAiProviderProfile {
    * unset fields from the installed model of the same id.
    */
   models?: PiAiModelProfile[]
+  /**
+   * Serve every model this route's endpoint advertises, beside the `models`
+   * entries above. A gateway with hundreds of models (a router, a self-hosted
+   * server) answers its own catalog far better than a hand-kept list, and a
+   * model added upstream appears without a configuration edit. The listing is
+   * `GET {baseURL}/models` for the OpenAI protocols and `GET /v1/models` for
+   * Anthropic Messages, read with the route's own credential and headers and
+   * refreshed while the app runs. An entry in `models` wins over the listing's
+   * row of the same id, so a deployment can still correct one model. A failed
+   * read leaves the `models` entries serving; a route with both none and a
+   * failed read reports the failure to its selectors.
+   */
+  discoverModels?: boolean
   /**
    * Installed-catalog customizations by model id: each entry reshapes that
    * one model with the same fields a {@link models} entry takes, while the
@@ -329,6 +344,7 @@ const profile = z.object({
   api: z.union(supportedProtocols()),
   baseURL: z.string(),
   models: z.array(modelProfile),
+  discoverModels: z.boolean(),
   modelOverrides: z.dict(modelOverride),
   compat: compatProfile,
   defaultContextWindow: z.number().step(1).min(1).default(DEFAULT_CONTEXT_WINDOW),
@@ -426,6 +442,21 @@ export function resolveProfiles(
       throw new Error(`llm-pi-ai: provider "${provider}" has an empty displayName`)
     }
     assertValidHeaders(provider, source.headers)
+    if (source.discoverModels === true) {
+      const api = source.api
+      if (api === undefined || !DISCOVERY_PROTOCOLS.has(api)) {
+        throw new Error(
+          `llm-pi-ai: provider "${provider}" sets discoverModels, which needs an "api" whose model listing`
+          + ` this build can read; name one of ${[...DISCOVERY_PROTOCOLS].join(', ')}`,
+        )
+      }
+      if ((source.baseURL ?? catalogProvider(provider)?.baseUrl) === undefined) {
+        throw new Error(
+          `llm-pi-ai: provider "${provider}" sets discoverModels, which needs a baseURL to read the`
+          + " endpoint's model listing from",
+        )
+      }
+    }
     const streamIdleTimeoutMs = source.streamIdleTimeoutMs ?? DEFAULT_STREAM_IDLE_TIMEOUT_MS
     if (!Number.isFinite(streamIdleTimeoutMs)
       || streamIdleTimeoutMs <= 0
@@ -473,6 +504,7 @@ export function resolveProfiles(
         defaultInput,
         defaultContextWindow: source.defaultContextWindow ?? DEFAULT_CONTEXT_WINDOW,
         defaultMaxTokens: source.defaultMaxTokens ?? DEFAULT_MAX_TOKENS,
+        ...source.discoverModels === true ? { discovery: true } : {},
       }, validation)
       catalogError = catalog.modelErrors.values().next().value
       piProvider = buildProvider({

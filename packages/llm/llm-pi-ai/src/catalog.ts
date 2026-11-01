@@ -668,6 +668,13 @@ export interface RouteCatalogRequest {
   defaultMaxTokens: number
   /** Modalities for a model neither the entry nor the catalog declares. */
   defaultInput: Model<Api>['input']
+  /**
+   * Whether this route serves models discovered from its own endpoint, which
+   * makes an empty configured list a complete route rather than an unusable
+   * one. Discovery itself runs in the adapter, which is the only layer holding
+   * a credential and a network.
+   */
+  discovery?: boolean
 }
 
 /** An expected configuration failure that stored-catalog reads may retain for repair. */
@@ -774,7 +781,12 @@ function resolveModelReasoning(
 }
 
 /** The compat block a materialized model carries, whichever protocol it speaks. */
-type ModelCompat = OpenAICompletionsCompat | OpenAIResponsesCompat | AnthropicMessagesCompat | BedrockCompat | MistralConversationsCompat
+export type ModelCompat =
+  | OpenAICompletionsCompat
+  | OpenAIResponsesCompat
+  | AnthropicMessagesCompat
+  | BedrockCompat
+  | MistralConversationsCompat
 
 /**
  * Resolve one model's compat block from the profile's switches.
@@ -827,9 +839,32 @@ function resolveModelCompat(
   return { compat: { ...inherited, ...configured } as ModelCompat }
 }
 
+/**
+ * The compat block one route's configured switches produce for a protocol,
+ * used for models the route did not enumerate — discovery, which learns its
+ * model list at request time. A field the protocol does not take is skipped,
+ * exactly as a route-level switch behaves when it meets a model of another
+ * protocol; the vocabulary was already checked at resolution.
+ * @param api - the protocol the model speaks.
+ * @param compat - the route-level switches, when any.
+ * @returns a `compat` field for the model, or `undefined` when none applies.
+ */
+export function routeModelCompat(
+  api: string,
+  compat: PiAiCompatProfile | undefined,
+): ModelCompat | undefined {
+  const gate = compatGate(api)
+  if (gate === undefined) return undefined
+  const configured: Record<string, unknown> = {}
+  for (const [field, value] of configuredCompatEntries(compat)) {
+    if (gate[field] !== 'offer') continue
+    configured[field] = value
+  }
+  return Object.keys(configured).length === 0 ? undefined : configured
+}
+
 /** One route's materialized catalog, plus the request caps its profile chose. */
-export interface RouteCatalog {
-  /** The materialized models in configuration order. */
+export interface RouteCatalog {  /** The materialized models in configuration order. */
   models: readonly Model<Api>[]
   /** Models that cannot be resolved, retained as diagnostics during stored-config reads. */
   modelErrors: ReadonlyMap<string, string>
@@ -899,6 +934,14 @@ export function resolveRouteModels(
     ? configured
     : [...defaults.values()].map(model => ({ id: model.id, ...overrides[model.id] }))
   if (entries.length === 0) {
+    // A discovery route serves whatever its endpoint advertises, so an empty
+    // configured list is a complete configuration. Its compat switches still
+    // have to be nameable, and that is all this branch can check: the models
+    // that would take them arrive later, from the endpoint.
+    if (request.discovery === true) {
+      assertOfferedCompatFields(provider, 'route', request.compat)
+      return { models: [], configuredMaxTokens: new Map(), modelErrors: new Map() }
+    }
     invalid(provider, 'resolves no models; the installed catalog does not describe this route, so its models'
       + ' must be listed in configuration')
   }

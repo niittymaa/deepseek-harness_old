@@ -1928,7 +1928,7 @@ export interface ExternalCliModel {
 
 - `inject`: `llm`
 - `refs`: `Api` (`@earendil-works/pi-ai`) · `CacheRetention` (`@earendil-works/pi-ai`) · `Model` (`@earendil-works/pi-ai`) · `ModelThinkingLevel` (`@earendil-works/pi-ai`) · `OpenAICompletionsCompat` (`@earendil-works/pi-ai`) · [`RetryPolicyConfig`](../packages/llm/llm/src/index.ts) · `ThinkingBudgets` (`@earendil-works/pi-ai`) · `Transport` (`@earendil-works/pi-ai`) · `Volatile` (`@deepseek-ai/cordis`)
-- `source`: [`packages/llm/llm-pi-ai/src/config.ts:222`](../packages/llm/llm-pi-ai/src/config.ts)
+- `source`: [`packages/llm/llm-pi-ai/src/config.ts:237`](../packages/llm/llm-pi-ai/src/config.ts)
 
 ```ts config-catalog
 /** Plugin configuration: the provider routes this instance owns. */
@@ -1961,6 +1961,19 @@ export interface PiAiProviderProfile {
    * unset fields from the installed model of the same id.
    */
   models?: PiAiModelProfile[]
+  /**
+   * Serve every model this route's endpoint advertises, beside the `models`
+   * entries above. A gateway with hundreds of models (a router, a self-hosted
+   * server) answers its own catalog far better than a hand-kept list, and a
+   * model added upstream appears without a configuration edit. The listing is
+   * `GET {baseURL}/models` for the OpenAI protocols and `GET /v1/models` for
+   * Anthropic Messages, read with the route's own credential and headers and
+   * refreshed while the app runs. An entry in `models` wins over the listing's
+   * row of the same id, so a deployment can still correct one model. A failed
+   * read leaves the `models` entries serving; a route with both none and a
+   * failed read reports the failure to its selectors.
+   */
+  discoverModels?: boolean
   /**
    * Installed-catalog customizations by model id: each entry reshapes that
    * one model with the same fields a {@link models} entry takes, while the

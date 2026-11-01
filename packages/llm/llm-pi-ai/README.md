@@ -79,6 +79,7 @@ Each profile may set a `retryPolicy`; omission uses normal mode with five retrie
 | `api` | catalog protocol | Wire protocol; only needed for routes the catalog does not supply |
 | `baseURL` | catalog endpoint | Endpoint of every model on the route |
 | `models` | installed catalog | Replaces the route's catalog wholesale; each entry defaults from the installed model |
+| `discoverModels` | `false` | Serves every model the route's endpoint advertises, beside the configured ones |
 | `modelOverrides` | none | Reshapes individual installed-catalog models without replacing the rest |
 | `compat` | catalog detection | Wire-compatibility switches for unrecognized endpoints |
 | `defaultContextWindow` | `1,000,000` | Capacity fallback for undescribed models |
@@ -97,6 +98,8 @@ A provider pi-ai ships a login for can be signed into through the harness author
 ### Resolve the model catalog
 
 A profile's `models` list replaces the route's installed catalog rather than extending it; each entry defaults its unset fields from the installed model of the same id, so narrowing a route to two models, correcting one capacity, or adding a model newer than the installed catalog are one-line edits. `modelOverrides` reshapes individual installed-catalog models without that cost — correct one model, keep the other thirty-seven — and is refused when set beside a `models` list, on a hand-declared route, or naming a model the catalog does not describe, because a silently unchanged model would be a typo someone hunts for later.
+
+A gateway that answers its own catalog better than a hand-kept list sets `discoverModels: true`: the route then serves every model its endpoint advertises, beside whatever `models` names, so a router with hundreds of models needs no maintained list. The listing is the same `GET {baseURL}/models` interrogation the configuration surface reads, taken with the route's own credential and `headers`, and it is refreshed while the app runs rather than frozen at boot. A listed row supplies the display name, context window, output cap, input modalities, and any reasoning tiers the endpoint discloses; a model the endpoint describes with an id alone takes the route's `defaultContextWindow`, `defaultMaxTokens`, and `defaultInput`. An entry in `models` still wins over the row of the same id, which is how a deployment keeps a curated name or reasoning levels for a model it uses most. A failed read leaves the `models` entries serving and is retried later; a route with neither a configured model nor a readable listing reports the failure to its selectors instead of looking empty.
 
 ### Run with reasoning and wire compatibility
 
@@ -247,7 +250,7 @@ These limits define where the adapter stops and future work begins. They are cur
 - **Reset restores inherited configuration** — resetting a route supplied by a lower profile layer restores that route.
 - **Complete Config replacement can remove inherited dictionary entries** — a field reset instead restores its inherited value.
 - **`headers` can carry a credential the redactor never sees** — profile resolution rejects names and values Fetch cannot represent, but the dict remains plain strings; store credentials as `apiKeyEnv` references.
-- **Discovery does not change configured models** — adopt discovery results explicitly into the route configuration.
+- **Discovery does not change configured models** — the Models page's fetch action offers candidates for adoption; it never writes configuration, and a route serves its endpoint's catalog at runtime only while it sets `discoverModels`.
 - **Anthropic discovery reads at most 1,000 models** — the request uses the API's maximum page size but does not traverse `has_more`; entries beyond the first page must be added by hand.
 - **Uncataloged models need an unambiguous protocol** — catalog routes preserve each model's protocol, including both Azure APIs under `azure`. A model absent from a mixed-protocol catalog needs an explicit route-level `api`, which overrides every model on the route and must be one of the supported custom protocols. For Azure deployment names, keep the catalog model ID and set `AZURE_OPENAI_DEPLOYMENT_NAME_MAP`.
 - **A modality declaration is not verified** — a model declaring `image` its gateway does not serve is refused by the provider after prompt admission. The durable image remains in history and the same misdeclared model can fail again; switching to a text-only model remains possible because the shared LLM runtime projects image references into stable text for that request.

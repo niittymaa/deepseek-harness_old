@@ -34,6 +34,7 @@ import type {
   Models,
   ModelThinkingLevel,
   MutableModels,
+  Provider,
   SimpleStreamOptions,
   ThinkingLevel,
 } from '@earendil-works/pi-ai'
@@ -59,6 +60,10 @@ import type {
 import type { AttachmentStore, ImageAttachmentRef } from '@deepseek-ai/dsh-attachment'
 import { idleWatchdog, timeoutOf } from '@deepseek-ai/dsh-timeout'
 import type { ResolvedPiAiProviderProfile } from './config.ts'
+import { DEFAULT_CONTEXT_WINDOW, DEFAULT_INPUT, DEFAULT_MAX_TOKENS } from './config.ts'
+import { catalogProvider, routeModelCompat } from './catalog.ts'
+import { fetchModelListing } from './discovery.ts'
+import type { PiAiListedModel } from './discovery.ts'
 import { requestImageTarget, toPiContext } from './context.ts'
 import { conversationUpdates, createModels, getSupportedThinkingLevels } from './models.ts'
 import { toStreamChunks } from './stream.ts'
@@ -79,6 +84,53 @@ interface PiAiSnapshot {
   profiles: ReadonlyMap<string, ResolvedPiAiProviderProfile>
   /** Providers for exactly those profiles; never mutated once published. */
   models: Models
+}
+
+/** How long one endpoint model listing serves before it is read again. */
+const DISCOVERY_TTL_MS = 60_000
+
+/** Ceiling on one endpoint listing read, so a hung gateway cannot stall a selector. */
+const DISCOVERY_TIMEOUT_MS = 20_000
+
+/** One route's last endpoint listing, with the profile it was read for. */
+interface DiscoveryState {
+  /**
+   * The listing-relevant profile facts it was read under: a changed endpoint,
+   * protocol, credential reference, or header set re-reads, while a change to
+   * the configured models does not (those win at provider construction).
+   */
+  key: string
+  /** Models the endpoint advertised that the profile does not already list. */
+  models: readonly Model<Api>[]
+  /** When the read completed, in epoch milliseconds. */
+  at: number
+}
+
+/**
+ * The listing-relevant identity of one profile. Identity by value rather than
+ * by object because a profile is re-resolved whenever configuration is read,
+ * and equal facts must not be mistaken for a change worth another request.
+ * @param profile - the route's resolved profile.
+ * @returns a stable key for the endpoint read.
+ */
+function discoveryKey(profile: ResolvedPiAiProviderProfile): string {
+  return JSON.stringify([profile.api, profile.baseURL, profile.apiKeyEnv, profile.headers ?? null])
+}
+
+/**
+ * A provider that also serves models discovered from its endpoint. `Models`
+ * reads `getModels()` on every lookup, so the wrapper widens the route's
+ * catalog while leaving its own auth, headers, and protocol dispatch intact.
+ * @param base - the provider built from configuration.
+ * @param discovered - endpoint models not named by configuration.
+ * @returns the provider to register, or `base` when it adds nothing.
+ */
+function withDiscoveredModels(base: Provider, discovered: readonly Model<Api>[]): Provider {
+  if (discovered.length === 0) return base
+  const named = new Set(base.getModels().map(model => model.id))
+  const additions = discovered.filter(model => !named.has(model.id))
+  if (additions.length === 0) return base
+  return { ...base, getModels: () => [...base.getModels(), ...additions] }
 }
 
 /** Constructor options for {@link PiAiAdapter}: the two resolution hooks the plugin owns. */
@@ -230,6 +282,8 @@ function requestHeaders(headers: Readonly<Record<string, string>> | undefined): 
  */
 export class PiAiAdapter extends LlmAdapter {
   private snapshot: PiAiSnapshot | undefined
+  private readonly discoveries = new Map<string, DiscoveryState>()
+  private readonly discoveryFlights = new Map<string, Promise<void>>()
 
   constructor(private readonly config: PiAiAdapterOptions) {
     super()
@@ -253,7 +307,11 @@ export class PiAiAdapter extends LlmAdapter {
     if (this.snapshot?.profiles === profiles) return this.snapshot
     const models: MutableModels = createModels(this.config.auth)
     for (const profile of profiles.values()) {
-      if (profile.piProvider !== undefined) models.setProvider(profile.piProvider)
+      if (profile.piProvider === undefined) continue
+      const discovery = this.discoveries.get(profile.provider)
+      models.setProvider(discovery !== undefined && discovery.key === discoveryKey(profile)
+        ? withDiscoveredModels(profile.piProvider, discovery.models)
+        : profile.piProvider)
     }
     this.snapshot = { profiles, models }
     return this.snapshot
@@ -281,6 +339,119 @@ export class PiAiAdapter extends LlmAdapter {
     return resolved
   }
 
+  /**
+   * Read the endpoint's listing for one discovery route when the cached one is
+   * stale, sharing one read among concurrent callers. A route that does not
+   * discover models answers immediately.
+   * @param provider - route to read the listing for.
+   * @param profile - that route's resolved profile.
+   * @param force - read even when the cached listing is fresh, for a model the
+   *   cache does not serve; concurrent callers still share the one read.
+   */
+  private async discover(
+    provider: string,
+    profile: ResolvedPiAiProviderProfile,
+    force = false,
+  ): Promise<void> {
+    if (profile.discoverModels !== true) return
+    const cached = this.discoveries.get(provider)
+    if (!force && cached !== undefined && cached.key === discoveryKey(profile)
+      && Date.now() - cached.at < DISCOVERY_TTL_MS) return
+    let flight = this.discoveryFlights.get(provider)
+    if (flight === undefined) {
+      flight = this.readDiscovery(provider, profile).finally(() => { this.discoveryFlights.delete(provider) })
+      this.discoveryFlights.set(provider, flight)
+    }
+    await flight
+  }
+
+  /**
+   * Interrogate one route's endpoint and publish what it advertised. A failed
+   * read never costs the route its configured models: they keep serving and
+   * the next read is retried after the ordinary interval. A route that has
+   * nothing else to serve reports the failure instead, because a silent empty
+   * catalog is indistinguishable from a provider with no models.
+   * @param provider - route to read the listing for.
+   * @param profile - that route's resolved profile.
+   */
+  private async readDiscovery(provider: string, profile: ResolvedPiAiProviderProfile): Promise<void> {
+    try {
+      const baseURL = profile.baseURL ?? catalogProvider(provider)?.baseUrl
+      if (baseURL === undefined) {
+        throw new LlmError(
+          `llm-pi-ai: provider "${provider}" sets discoverModels but resolves no endpoint to read a model listing from`,
+          'INVALID_CONFIG',
+        )
+      }
+      if (profile.api === undefined) {
+        throw new LlmError(
+          `llm-pi-ai: provider "${provider}" sets discoverModels but resolves no api to read a model listing from`,
+          'INVALID_CONFIG',
+        )
+      }
+      const apiKey = await this.config.resolveApiKey(provider, profile)
+      const listed = await fetchModelListing({
+        baseURL,
+        api: profile.api,
+        ...apiKey === undefined ? {} : { apiKey },
+        ...profile.headers === undefined ? {} : { headers: profile.headers },
+        signal: AbortSignal.timeout(DISCOVERY_TIMEOUT_MS),
+      })
+      const named = new Set(profile.piProvider?.getModels().map(model => model.id) ?? [])
+      this.discoveries.set(provider, {
+        key: discoveryKey(profile),
+        models: listed.filter(entry => !named.has(entry.id))
+          .map(entry => this.listedModel(provider, profile, baseURL, entry)),
+        at: Date.now(),
+      })
+      // The next read builds a collection that serves the fresh catalog; a
+      // request already holding the previous snapshot finishes under it.
+      this.snapshot = undefined
+    } catch (error) {
+      if ((profile.piProvider?.getModels().length ?? 0) === 0) throw error
+      this.discoveries.set(provider, {
+        key: discoveryKey(profile),
+        models: this.discoveries.get(provider)?.models ?? [],
+        at: Date.now(),
+      })
+    }
+  }
+
+  /**
+   * The pi-ai descriptor for one model learned from an endpoint. The listing
+   * supplies what it discloses; the route's own defaults answer the rest, so a
+   * gateway that reports ids alone still yields serviceable models. The
+   * advertised output cap is a capability, never a per-request default.
+   * @param provider - route the model belongs to.
+   * @param profile - that route's resolved profile.
+   * @param baseUrl - endpoint the route sends requests to.
+   * @param entry - one model the endpoint listed.
+   * @returns the model descriptor to serve.
+   */
+  private listedModel(
+    provider: string,
+    profile: ResolvedPiAiProviderProfile,
+    baseUrl: string,
+    entry: PiAiListedModel,
+  ): Model<Api> {
+    const api = profile.api ?? 'openai-completions'
+    const compat = routeModelCompat(api, profile.compat)
+    return {
+      id: entry.id,
+      name: entry.name,
+      api,
+      provider,
+      baseUrl,
+      input: entry.input ?? [...profile.defaultInput ?? DEFAULT_INPUT],
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+      contextWindow: entry.contextWindow ?? profile.defaultContextWindow ?? DEFAULT_CONTEXT_WINDOW,
+      maxTokens: entry.maxTokens ?? profile.defaultMaxTokens ?? DEFAULT_MAX_TOKENS,
+      reasoning: entry.reasoningEfforts !== undefined,
+      ...entry.reasoningEfforts === undefined ? {} : { thinkingLevelMap: entry.reasoningEfforts },
+      ...compat === undefined ? {} : { compat },
+    }
+  }
+
   override providerInfo(provider: string): LlmProviderInfo {
     // The configured name, not the route key: `displayName` exists so a
     // deployment can label a route, and a label only the configuration surface
@@ -302,7 +473,8 @@ export class PiAiAdapter extends LlmAdapter {
         if (error instanceof LlmError && error.code === 'MISSING_CREDENTIAL') return []
         throw error
       }
-      return snapshot.models.getModels(provider).map(model => ({
+      await this.discover(provider, profile)
+      return this.current().models.getModels(provider).map(model => ({
         provider,
         id: model.id,
         name: model.name,
@@ -316,10 +488,26 @@ export class PiAiAdapter extends LlmAdapter {
     model: string,
     _signal?: AbortSignal,
   ): Promise<LlmResolvedModelInfo> {
-    return Promise.resolve().then(() => {
-      const snapshot = this.current()
-      return this.modelInfo(snapshot, provider, model)
+    return Promise.resolve().then(async () => {
+      await this.learnModel(provider, model)
+      return this.modelInfo(this.current(), provider, model)
     })
+  }
+
+  /**
+   * Read a discovery route's listing before a model it did not serve at the
+   * last read is looked up — a selection restored from a durable Session, or
+   * a model announced upstream since. Routes that discover nothing skip this.
+   * @param provider - route the model belongs to.
+   * @param model - exact model id being looked up.
+   */
+  private async learnModel(provider: string, model: string): Promise<void> {
+    const snapshot = this.current()
+    const profile = this.profileOf(snapshot, provider)
+    if (profile.discoverModels !== true || snapshot.models.getModel(provider, model) !== undefined) return
+    // A model the cached listing does not serve is exactly the case a fresh
+    // read exists for: an older selection, or one announced since the last read.
+    await this.discover(provider, profile, true)
   }
 
   private modelInfo(snapshot: PiAiSnapshot, provider: string, model: string): LlmResolvedModelInfo {
@@ -342,15 +530,40 @@ export class PiAiAdapter extends LlmAdapter {
   }
 
   override prepareCall(provider: string, model: string, _signal?: AbortSignal): Promise<PreparedAdapterCall> {
-    const snapshot = this.current()
-    return Promise.resolve({
-      model: this.modelInfo(snapshot, provider, model),
-      stream: options => this.streamWithSnapshot(options, snapshot),
+    return Promise.resolve().then(async () => {
+      await this.learnModel(provider, model)
+      const snapshot = this.current()
+      return {
+        model: this.modelInfo(snapshot, provider, model),
+        stream: options => this.streamWithSnapshot(options, snapshot),
+      }
     })
   }
 
   stream(options: GenerateOptions): AsyncIterable<StreamChunk> {
-    return this.streamWithSnapshot(options, this.current())
+    // The snapshot is captured synchronously, like the direct path always was:
+    // a configuration change during the credential await must not move this
+    // request onto a collection that no longer owns its route.
+    return this.streamDiscovered(options, this.current())
+  }
+
+  /**
+   * Resolve the route's listing before the stream dispatches, so a model
+   * learned at request time is dispatchable on the request that names it.
+   * @param options - the assembled request.
+   * @param snapshot - the resolution this request started under.
+   * @returns the response chunks.
+   */
+  private async * streamDiscovered(
+    options: GenerateOptions,
+    snapshot: PiAiSnapshot,
+  ): AsyncIterable<StreamChunk> {
+    const profile = snapshot.profiles.get(options.provider)
+    if (profile?.discoverModels === true && snapshot.models.getModel(options.provider, options.model) === undefined) {
+      await this.discover(options.provider, profile, true)
+      snapshot = this.current()
+    }
+    yield * this.streamWithSnapshot(options, snapshot)
   }
 
   private async * streamWithSnapshot(
