@@ -474,7 +474,7 @@ export function ProviderEditor(props: ProviderEditorProps): ReactNode {
           <p className={styles[cliArgsConflict ? 'error' : 'advancedHint']}>{t(cliArgsConflict ? 'cliArgumentConflict' : 'cliArgsHint')}</p>
           <div className={styles['field']}>
             <span className={styles['fieldLabel']}>{t('cliType')}</span>
-            <select className={styles['input']} aria-label={t('cliType')}
+            <select className={`${styles['input']} ${styles['selectInput']}`} aria-label={t('cliType')}
               value={stringAt(draft, 'cliType') ?? stringAt(fallback, 'cliType') ?? (['agy', 'claude', 'codex', 'copilot'].includes(props.provider) ? props.provider : 'custom')}
               disabled={disabled} onChange={(event) => { setField('cliType', event.target.value) }}>
               <option value="agy">{t('cliPresetAgy')}</option>

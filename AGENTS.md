@@ -126,7 +126,7 @@ Windows packaging/signing: [required reading](apps/desktop/windows-signing/READM
 
 Real-API tests/demos read `DEEPSEEK_API_KEY`, optional `DEEPSEEK_BASE_URL`, and root `.env`. cordis.yml allows `!!js` (never `!js`) under plugin `config` and entry `disabled`; other metadata stays literal, so conditional composition also uses overlays ([primer](docs/cordis-primer.md#loader-configuration)). Never commit credentials. CI e2e skips without a key; [testing.md](docs/testing.md) owns key policy.
 
-**Pushing.** `origin` is the maintainer fork (`github.com/niittymaa/deepseek-harness`); commit and push requested work to `master` without asking. Scan outgoing diffs for credentials, personal or machine-specific paths, and internal hosts; report instead of pushing.
+**Pushing.** `origin` is the fork (`niittymaa/deepseek-harness`); push requested work to `master` unasked, after scanning diffs for credentials, personal paths, and internal hosts. Sync upstream per [dsh-sync-upstream](.agents/skills/dsh-sync-upstream/SKILL.md); no CI or Docker.
 
 ## Conventions
 

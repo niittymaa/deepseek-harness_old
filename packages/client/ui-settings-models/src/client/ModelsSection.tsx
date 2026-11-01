@@ -611,8 +611,8 @@ function Loaded({ injected, renderSlot }: { injected: ModelsSectionFace; renderS
                         }] : [],
                       ]}
                       onChange={(next) => {
-                        setAddMode(next as AddMode)
-                        setVisited(previous => new Set([...previous, next as AddMode]))
+                        setAddMode(next)
+                        setVisited(previous => new Set([...previous, next]))
                       }}
                     />
                   )

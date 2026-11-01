@@ -110,6 +110,7 @@ export function parseThinkTags(output: string): { reasoning?: string; content: s
  * Resolve the effective executable command and argument list.
  * @param config - Provider configuration options.
  * @param options - Generation options with model identifier.
+ * @param sandbox - File access of the Session; the CLI's own permission settings apply when omitted.
  * @returns Resolved executable name and arguments array.
  */
 export function resolveCommandAndArgs(
@@ -329,6 +330,7 @@ function effortArgs(
  * Empty successful output yields CLI_EMPTY_OUTPUT with the standard-error diagnostic.
  * @param config - Provider configuration options.
  * @param options - Full generate options.
+ * @param session - Working directory and file access of the Session the turn belongs to.
  * @returns Async iterable yielding canonical StreamChunks.
  */
 export async function* streamExternalCli(

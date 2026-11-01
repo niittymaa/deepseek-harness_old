@@ -44,11 +44,14 @@ describe('the shipped creator skills', () => {
   it('keeps agent-experience in the package with a repository alias, not a second copy', () => {
     expect(names).toContain('agent-experience')
     expect(lstatSync(canonical).isFile()).toBe(true)
+    // The alias is a symbolic link, or a pointer skill whose only link names
+    // the canonical file: a link Git materializes as a plain file on Windows
+    // (core.symlinks=false) is not a loadable skill there.
     const linked = lstatSync(alias).isSymbolicLink()
-    // Git can materialize link targets as plain files on Windows with core.symlinks=false.
-    if (!linked) expect(process.platform).toBe('win32')
-    const target = linked ? readlinkSync(alias) : readFileSync(alias, 'utf8').trim()
-    expect(resolve(dirname(alias), target)).toBe(canonical)
+    const text = linked ? '' : readFileSync(alias, 'utf8')
+    const targets = linked ? [readlinkSync(alias)] : [...text.matchAll(/\]\(([^)]+)\)/g)].map(match => match[1] ?? '')
+    expect(targets.map(target => resolve(dirname(alias), target))).toEqual([canonical])
+    if (!linked) expect(text.length).toBeLessThan(readFileSync(canonical, 'utf8').length / 4)
   })
 
   it.for(['package', 'repository'] as const)('loads agent-experience from the %s skill root', async (source, test) => {

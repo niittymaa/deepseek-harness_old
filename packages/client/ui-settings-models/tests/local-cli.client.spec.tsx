@@ -72,11 +72,11 @@ describe('LocalCliCard', () => {
     )
 
     // Preset dropdown defaults to Agy CLI
-    expect((screen.getByLabelText(en.cliPreset) as HTMLSelectElement).value).toBe('agy')
-    expect((screen.getByLabelText(en.cliRoute) as HTMLInputElement).value).toBe('agy')
-    expect((screen.getByLabelText(en.cliDisplayName) as HTMLInputElement).value).toBe('Agy CLI')
-    expect((screen.getByLabelText(en.cliCommand) as HTMLInputElement).value).toBe('agy')
-    expect((screen.getByLabelText(en.cliArgs) as HTMLInputElement).value).toBe('--print -')
+    expect(screen.getByLabelText<HTMLSelectElement>(en.cliPreset).value).toBe('agy')
+    expect(screen.getByLabelText<HTMLInputElement>(en.cliRoute).value).toBe('agy')
+    expect(screen.getByLabelText<HTMLInputElement>(en.cliDisplayName).value).toBe('Agy CLI')
+    expect(screen.getByLabelText<HTMLInputElement>(en.cliCommand).value).toBe('agy')
+    expect(screen.getByLabelText<HTMLInputElement>(en.cliArgs).value).toBe('--print -')
 
     fireEvent.click(screen.getByText(en.create))
 
@@ -119,23 +119,23 @@ describe('LocalCliCard', () => {
 
     // Switch to Claude Code
     fireEvent.change(screen.getByLabelText(en.cliPreset), { target: { value: 'claude' } })
-    expect((screen.getByLabelText(en.cliRoute) as HTMLInputElement).value).toBe('claude')
-    expect((screen.getByLabelText(en.cliDisplayName) as HTMLInputElement).value).toBe('Claude Code CLI')
-    expect((screen.getByLabelText(en.cliCommand) as HTMLInputElement).value).toBe('claude')
-    expect((screen.getByLabelText(en.cliArgs) as HTMLInputElement).value).toBe('--print')
+    expect(screen.getByLabelText<HTMLInputElement>(en.cliRoute).value).toBe('claude')
+    expect(screen.getByLabelText<HTMLInputElement>(en.cliDisplayName).value).toBe('Claude Code CLI')
+    expect(screen.getByLabelText<HTMLInputElement>(en.cliCommand).value).toBe('claude')
+    expect(screen.getByLabelText<HTMLInputElement>(en.cliArgs).value).toBe('--print')
 
     // Switch to Codex
     fireEvent.change(screen.getByLabelText(en.cliPreset), { target: { value: 'codex' } })
-    expect((screen.getByLabelText(en.cliRoute) as HTMLInputElement).value).toBe('codex')
-    expect((screen.getByLabelText(en.cliDisplayName) as HTMLInputElement).value).toBe('Codex CLI')
-    expect((screen.getByLabelText(en.cliCommand) as HTMLInputElement).value).toBe('codex')
-    expect((screen.getByLabelText(en.cliArgs) as HTMLInputElement).value).toBe('exec')
+    expect(screen.getByLabelText<HTMLInputElement>(en.cliRoute).value).toBe('codex')
+    expect(screen.getByLabelText<HTMLInputElement>(en.cliDisplayName).value).toBe('Codex CLI')
+    expect(screen.getByLabelText<HTMLInputElement>(en.cliCommand).value).toBe('codex')
+    expect(screen.getByLabelText<HTMLInputElement>(en.cliArgs).value).toBe('exec')
 
     // Switch to Custom CLI
     fireEvent.change(screen.getByLabelText(en.cliPreset), { target: { value: 'custom' } })
-    expect((screen.getByLabelText(en.cliRoute) as HTMLInputElement).value).toBe('')
-    expect((screen.getByLabelText(en.cliRoute) as HTMLInputElement).disabled).toBe(false)
-    expect((screen.getByLabelText(en.cliCommand) as HTMLInputElement).value).toBe('')
+    expect(screen.getByLabelText<HTMLInputElement>(en.cliRoute).value).toBe('')
+    expect(screen.getByLabelText<HTMLInputElement>(en.cliRoute).disabled).toBe(false)
+    expect(screen.getByLabelText<HTMLInputElement>(en.cliCommand).value).toBe('')
   })
 
   it('validates custom route format and unique route constraint', () => {
