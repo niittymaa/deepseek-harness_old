@@ -93,7 +93,7 @@ git commit --no-edit          # keeps the merge message; add the attribution tra
 git push origin master
 ```
 
-The pre-commit and pre-push hooks run lint, whitespace, and typecheck; fix failures instead of skipping hooks. Scan the merge's fork-side resolutions for credentials and personal paths before pushing.
+The pre-commit and pre-push hooks run lint, whitespace, and typecheck; fix failures instead of skipping hooks. Upstream commits usually touch `.github/workflows/`, and GitHub refuses such a push ("without `workflow` scope") unless the credential carries that scope, even with Actions disabled. Check with `gh auth status` (the token scopes must list `workflow`); when it is missing, the user runs `gh auth refresh -h github.com -s workflow` once, an interactive browser sign-in, and the push is retried. Scan the merge's fork-side resolutions for credentials and personal paths before pushing.
 
 ## 7. Report
 
