@@ -55,6 +55,14 @@ export function apply(ctx: Context, config: PluginConfig = {}): void {
   let effectiveConfig = getEffectiveConfig()
   const primaryProvider = effectiveConfig.provider ?? 'external-cli'
   const adapter = new ExternalCliAdapter(effectiveConfig)
+  // Optional services, looked up per turn: a host without Sessions or a
+  // working directory runs the CLI in the app's directory.
+  adapter.resolveCwd = (sessionId) => {
+    const sessions = ctx.get('sessions') as { get(id: string): unknown } | undefined
+    const directory = ctx.get('workingDirectory') as { get(session: unknown): string } | undefined
+    const session = sessions?.get(sessionId)
+    return session === undefined || directory === undefined ? undefined : directory.get(session)
+  }
 
   let adapterRegistration: AdapterRegistrationHandle | undefined
   let directoryRegistration: DirectoryRegistrationHandle | undefined

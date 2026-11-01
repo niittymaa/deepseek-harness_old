@@ -1,10 +1,13 @@
 import { describe, expect, it } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
-import { BlockAssembler, LlmRuntime, createUserMessage, ReasoningEffortId, type GenerateOptions } from '@deepseek-ai/dsh-llm'
+import { BlockAssembler, LlmRuntime, createUserMessage, ReasoningEffortId, type GenerateOptions, type StreamChunk } from '@deepseek-ai/dsh-llm'
 import { ExternalCliAdapter, DEFAULT_CONTEXT_WINDOW } from '../src/adapter.ts'
 import { formatPrompt, parseAgyStream, parseThinkTags, resolveCommandAndArgs } from '../src/process.ts'
 import * as LlmExternalCli from '../src/index.ts'
 import { cliChildEnv } from '../src/env.ts'
+import { mkdtempSync, realpathSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 
 describe('formatPrompt', () => {
   it('formats single user text message for completion mode without role wrapper', () => {
@@ -641,5 +644,118 @@ describe('parseAgyStream', () => {
 
   it('reports the error of a failed run', () => {
     expect(parseAgyStream('{"event":"result","result":{"status":"ERROR","error":"denied"}}')).toEqual({ error: 'denied' })
+  })
+})
+
+describe('Session working directory', () => {
+  const runIn = async (adapter: ExternalCliAdapter, sessionId?: string): Promise<string> => {
+    let text = ''
+    for await (const chunk of adapter.stream({
+      provider: 'external-cli', model: 'test',
+      messages: [createUserMessage({ content: [{ type: 'text', text: 'pwd' }], source: { kind: 'user' } })],
+      ...sessionId === undefined ? {} : { sessionId },
+    } as unknown as GenerateOptions)) {
+      if (chunk.type === 'text-delta') text += chunk.text
+    }
+    return text
+  }
+  const printCwd = { command: process.execPath, args: ['-e', 'process.stdout.write(process.cwd())'] }
+
+  it('runs the CLI in the Session working directory', async () => {
+    const project = mkdtempSync(join(tmpdir(), 'dsh-cli-cwd-'))
+    const adapter = new ExternalCliAdapter(printCwd)
+    adapter.resolveCwd = sessionId => sessionId === 'session-1' ? project : undefined
+    expect(realpathSync(await runIn(adapter, 'session-1'))).toBe(realpathSync(project))
+  })
+
+  it('runs the CLI in the app directory without a Session directory', async () => {
+    const adapter = new ExternalCliAdapter(printCwd)
+    expect(await runIn(adapter)).toBe(process.cwd())
+  })
+})
+
+describe('headless defaults', () => {
+  it.each([
+    ['codex', ['exec', '--skip-git-repo-check'], ['exec', '--skip-git-repo-check']],
+    ['codex', ['review'], ['review']],
+    ['copilot', ['-s'], ['-s']],
+    ['copilot', ['--silent'], ['--silent']],
+    ['agy', ['--print=hello'], ['--print=hello']],
+    ['agy', ['-p', '-', '--mode', 'auto'], ['--input-format', 'stream-json', '--output-format', 'stream-json', '--print=', '--mode', 'auto']],
+  ] as const)('keeps what a %s route already sets', (command, args, expected) => {
+    expect(resolveCommandAndArgs({ providers: { [command]: { command, args: [...args] } } }, {
+      provider: command, model: command, messages: [],
+    }).args).toEqual([...expected])
+  })
+})
+
+describe('parseAgyStream edge cases', () => {
+  it.each([
+    ['plain text\n{not json\n{"event":"init"}\n{"event":"result"}', { error: 'plain text\n{not json\n{"event":"init"}\n{"event":"result"}' }],
+    ['', { error: 'Agy returned no result event' }],
+    ['{"event":"result","result":{"status":"SUCCESS"}}', { response: '' }],
+    ['{"event":"result","result":{"status":"CANCELLED"}}', { error: 'Agy finished with status CANCELLED' }],
+    ['{"event":"result","result":{}}', { error: 'Agy finished with status unknown' }],
+  ])('parses %j', (stdout, expected) => {
+    expect(parseAgyStream(stdout)).toEqual(expected)
+  })
+})
+
+describe('Agy stream-json turns', () => {
+  // A stand-in for agy: it reads the stream-json user message from stdin and
+  // answers with a result event, as `agy --input-format stream-json` does.
+  const fakeAgy = (status: string): string => 'let s=\'\';process.stdin.on(\'data\',d=>s+=d).on(\'end\',()=>{const m=JSON.parse(s);'
+    + `const nl=String.fromCharCode(10);process.stdout.write(JSON.stringify({event:'init'})+nl+JSON.stringify({event:'result',result:{status:'${status}',response:'got:'+m.message.content,error:'denied'}})+nl)})`
+  const run = async (status: string): Promise<StreamChunk[]> => {
+    const adapter = new ExternalCliAdapter({ providers: { agy: {
+      command: process.execPath, cliType: 'agy', args: ['-e', fakeAgy(status), '--', '--input-format', 'stream-json'],
+    } } })
+    const chunks: StreamChunk[] = []
+    for await (const chunk of adapter.stream({ provider: 'agy', model: 'agy', messages: [
+      createUserMessage({ content: [{ type: 'text', text: 'hello' }], source: { kind: 'user' } }),
+    ] })) chunks.push(chunk)
+    return chunks
+  }
+
+  it('sends the prompt as a stream-json message and answers with the result', async () => {
+    const chunks = await run('SUCCESS')
+    expect(chunks.filter(chunk => chunk.type === 'text-delta').map(chunk => chunk.text).join('')).toBe('got:hello')
+    expect(chunks.at(-1)).toEqual({ type: 'finish', reason: { kind: 'stop' } })
+  })
+
+  it('reports the error of a failed Agy turn', async () => {
+    const chunks = await run('ERROR')
+    expect(chunks.at(-1)).toEqual({ type: 'finish', reason: { kind: 'error', failure: {
+      code: 'CLI_EXECUTION_ERROR', message: `CLI command "${process.execPath}" failed: denied`,
+    } } })
+  })
+})
+
+describe('plugin Session directory lookup', () => {
+  const printCwd = { command: process.execPath, cliType: 'custom' as const, args: ['-e', 'process.stdout.write(process.cwd())'] }
+  const turn = async (ctx: Context, sessionId: string): Promise<string> => {
+    let text = ''
+    for await (const chunk of ctx.llm.stream({ provider: 'route', model: 'route', sessionId, messages: [
+      createUserMessage({ content: [{ type: 'text', text: 'pwd' }], source: { kind: 'user' } }),
+    ] } as unknown as GenerateOptions)) if (chunk.type === 'text-delta') text += chunk.text
+    return text
+  }
+
+  it('runs the CLI in the directory the working-directory service records for the Session', async () => {
+    const project = mkdtempSync(join(tmpdir(), 'dsh-cli-plugin-cwd-'))
+    const ctx = new Context()
+    await ctx.plugin(LlmRuntime)
+    ctx.provide('sessions', { get: (id: string) => id === 'known' ? { id } : undefined } as never)
+    ctx.provide('workingDirectory', { get: () => project } as never)
+    await ctx.plugin(LlmExternalCli, { providers: { route: printCwd } })
+    expect(realpathSync(await turn(ctx, 'known'))).toBe(realpathSync(project))
+    expect(await turn(ctx, 'unknown')).toBe(process.cwd())
+  })
+
+  it('runs the CLI in the app directory on a host without Sessions', async () => {
+    const ctx = new Context()
+    await ctx.plugin(LlmRuntime)
+    await ctx.plugin(LlmExternalCli, { providers: { route: printCwd } })
+    expect(await turn(ctx, 'any')).toBe(process.cwd())
   })
 })

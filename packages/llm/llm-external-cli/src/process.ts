@@ -281,6 +281,7 @@ function effortArgs(
 export async function* streamExternalCli(
   config: ExternalCliOptions,
   options: GenerateOptions,
+  cwd?: string,
 ): AsyncIterable<StreamChunk> {
   const profile = config.providers?.[options.provider] ?? config.providers?.[options.model]
   const prompt = formatPrompt(options)
@@ -295,6 +296,7 @@ export async function* streamExternalCli(
       stdio: ['pipe', 'pipe', 'pipe'],
       shell,
       env: cliChildEnv(process.env),
+      ...cwd === undefined ? {} : { cwd },
     })
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : String(error)

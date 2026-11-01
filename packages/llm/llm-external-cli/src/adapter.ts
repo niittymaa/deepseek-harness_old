@@ -54,6 +54,12 @@ export class ExternalCliAdapter extends LlmAdapter {
   private config: ExternalCliOptions
   /** Catalog the last discovery read for each route, refreshed by the model menu. */
   private readonly catalogs = new Map<string, readonly ExternalCliModel[]>()
+  /**
+   * The working directory of a Session, so the CLI's own tools act on the
+   * user's project as they do when the CLI runs in a terminal there. Unset or
+   * undefined runs the CLI in the app's directory.
+   */
+  resolveCwd?: (sessionId: string) => string | undefined
 
   /**
    * Create a new ExternalCliAdapter instance.
@@ -205,9 +211,10 @@ export class ExternalCliAdapter extends LlmAdapter {
    */
   override async *stream(options: GenerateOptions): AsyncIterable<StreamChunk> {
     const config = this.config
+    const cwd = options.sessionId === undefined ? undefined : this.resolveCwd?.(options.sessionId)
     const profile = config.providers?.[options.provider]
     if (profile === undefined) {
-      yield* streamExternalCli(config, options)
+      yield* streamExternalCli(config, options, cwd)
       return
     }
     // A model the chat lists without saving it is served from a fresh catalog;
@@ -217,7 +224,7 @@ export class ExternalCliAdapter extends LlmAdapter {
     }
     yield* streamExternalCli({ ...config, providers: { ...config.providers,
       [options.provider]: { ...profile, models: this.catalog(options.provider, profile) },
-    } }, options)
+    } }, options, cwd)
   }
 
   /**
