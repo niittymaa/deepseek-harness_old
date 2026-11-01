@@ -664,13 +664,14 @@ describe('Session working directory', () => {
   it('runs the CLI in the Session working directory', async () => {
     const project = mkdtempSync(join(tmpdir(), 'dsh-cli-cwd-'))
     const adapter = new ExternalCliAdapter(printCwd)
-    adapter.resolveCwd = sessionId => sessionId === 'session-1' ? project : undefined
+    adapter.resolveSession = sessionId => sessionId === 'session-1' ? { cwd: project } : {}
     expect(realpathSync(await runIn(adapter, 'session-1'))).toBe(realpathSync(project))
   })
 
   it('runs the CLI in the app directory without a Session directory', async () => {
     const adapter = new ExternalCliAdapter(printCwd)
     expect(await runIn(adapter)).toBe(process.cwd())
+    expect(await runIn(adapter, 'session-without-host')).toBe(process.cwd())
   })
 })
 
@@ -757,5 +758,37 @@ describe('plugin Session directory lookup', () => {
     await ctx.plugin(LlmRuntime)
     await ctx.plugin(LlmExternalCli, { providers: { route: printCwd } })
     expect(await turn(ctx, 'any')).toBe(process.cwd())
+  })
+})
+
+describe('Session file access', () => {
+  const resolve = (command: string, sandbox: 'read-only' | 'workspace-write' | 'danger-full-access', args?: string[]) =>
+    resolveCommandAndArgs({ providers: { [command]: { command, ...args === undefined ? {} : { args } } } },
+      { provider: command, model: command, messages: [] }, sandbox).args
+
+  it.each([
+    ['claude', 'read-only', ['--print', '--permission-mode', 'plan']],
+    ['claude', 'workspace-write', ['--print', '--permission-mode', 'acceptEdits']],
+    ['claude', 'danger-full-access', ['--print', '--permission-mode', 'bypassPermissions']],
+    ['agy', 'read-only', ['--input-format', 'stream-json', '--output-format', 'stream-json', '--print=', '--mode', 'plan']],
+    ['agy', 'workspace-write', ['--input-format', 'stream-json', '--output-format', 'stream-json', '--print=', '--sandbox', '--dangerously-skip-permissions']],
+    ['agy', 'danger-full-access', ['--input-format', 'stream-json', '--output-format', 'stream-json', '--print=', '--dangerously-skip-permissions']],
+    ['codex', 'read-only', ['exec', '--skip-git-repo-check', '--sandbox', 'read-only']],
+    ['codex', 'workspace-write', ['exec', '--skip-git-repo-check', '--sandbox', 'workspace-write']],
+    ['codex', 'danger-full-access', ['exec', '--skip-git-repo-check', '--sandbox', 'danger-full-access']],
+    ['copilot', 'read-only', ['--silent', '--allow-all-tools', '--deny-tool', 'shell', '--deny-tool', 'write']],
+    ['copilot', 'workspace-write', ['--silent', '--allow-all-tools']],
+    ['copilot', 'danger-full-access', ['--silent', '--allow-all']],
+  ] as const)('grants %s the %s access of the Session', (command, sandbox, expected) => {
+    expect(resolve(command, sandbox)).toEqual([...expected])
+  })
+
+  it('keeps the permissions a route sets itself', () => {
+    expect(resolve('claude', 'danger-full-access', ['--print', '--permission-mode=plan'])).toEqual(['--print', '--permission-mode=plan'])
+    expect(resolve('codex', 'danger-full-access', ['exec', '-s', 'read-only'])).toEqual(['exec', '-s', 'read-only', '--skip-git-repo-check'])
+  })
+
+  it('adds nothing for a custom CLI', () => {
+    expect(resolveCommandAndArgs({ providers: { tool: { command: 'tool', cliType: 'custom' } } }, { provider: 'tool', model: 'tool', messages: [] }, 'workspace-write').args).toEqual([])
   })
 })

@@ -30,6 +30,17 @@ const ModelSchema: z<ExternalCliModel> = z.object({
   reasoningEfforts: z.dict(z.union([z.string(), z.const(null)])),
 })
 
+/** File access a Session grants, as the harness permission presets name it. */
+export type CliSandboxMode = 'read-only' | 'workspace-write' | 'danger-full-access'
+
+/** What the harness knows about the Session a CLI turn belongs to. */
+export interface CliSessionContext {
+  /** The Session's working directory; the app directory when unset. */
+  cwd?: string
+  /** The Session's file access; the CLI's own permission settings apply when unset. */
+  sandbox?: CliSandboxMode
+}
+
 /** Configuration profile for one external CLI provider route. */
 export interface ExternalCliProviderProfile {
   /** The executable name (e.g. agy, codex, claude, copilot). */

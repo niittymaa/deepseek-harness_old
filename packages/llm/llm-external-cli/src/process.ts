@@ -7,7 +7,7 @@
 import { spawn } from 'node:child_process'
 import type { ContentBlock, GenerateOptions, StreamChunk, TokenUsage } from '@deepseek-ai/dsh-llm'
 import { LlmError } from '@deepseek-ai/dsh-llm'
-import type { ExternalCliOptions, ExternalCliProviderProfile } from './config.ts'
+import type { CliSandboxMode, CliSessionContext, ExternalCliOptions, ExternalCliProviderProfile } from './config.ts'
 import { cliEffortLevels, cliType } from './catalog.ts'
 import { cliChildEnv } from './env.ts'
 
@@ -115,6 +115,7 @@ export function parseThinkTags(output: string): { reasoning?: string; content: s
 export function resolveCommandAndArgs(
   config: ExternalCliOptions,
   options: GenerateOptions,
+  sandbox?: CliSandboxMode,
 ): { command: string; args: string[] } {
   const profile = config.providers?.[options.provider] ?? config.providers?.[options.model]
   let command = profile?.command ?? config.command
@@ -159,6 +160,7 @@ export function resolveCommandAndArgs(
     throw new LlmError('The selected CLI model is unavailable. Select a model from the chat menu.', 'CLI_MODEL_UNAVAILABLE')
   }
   args = withHeadlessDefaults(cliType({ ...profile, command }), args)
+  if (sandbox !== undefined) args.push(...permissionArgs(cliType({ ...profile, command }), args, sandbox))
   const effort = options.reasoningEffort
   if (profile !== undefined && selected !== undefined) {
     assertNoOverrides(args)
@@ -208,6 +210,57 @@ function withHeadlessDefaults(kind: NonNullable<ExternalCliProviderProfile['cliT
     default:
       return args
   }
+}
+
+/** Each CLI's options for the file access a Session grants. */
+const PERMISSION_ARGS: Record<'agy' | 'claude' | 'codex' | 'copilot', Record<CliSandboxMode, readonly string[]>> = {
+  claude: {
+    'read-only': ['--permission-mode', 'plan'],
+    'workspace-write': ['--permission-mode', 'acceptEdits'],
+    'danger-full-access': ['--permission-mode', 'bypassPermissions'],
+  },
+  // Agy's sandbox restricts its terminal, so approving inside it keeps writes
+  // to what the sandbox allows.
+  agy: {
+    'read-only': ['--mode', 'plan'],
+    'workspace-write': ['--sandbox', '--dangerously-skip-permissions'],
+    'danger-full-access': ['--dangerously-skip-permissions'],
+  },
+  codex: {
+    'read-only': ['--sandbox', 'read-only'],
+    'workspace-write': ['--sandbox', 'workspace-write'],
+    'danger-full-access': ['--sandbox', 'danger-full-access'],
+  },
+  // Copilot needs tool approval to act at all without a prompt; it keeps file
+  // access inside the working directory unless all paths are allowed.
+  copilot: {
+    'read-only': ['--allow-all-tools', '--deny-tool', 'shell', '--deny-tool', 'write'],
+    'workspace-write': ['--allow-all-tools'],
+    'danger-full-access': ['--allow-all'],
+  },
+}
+
+/** Options by which a route already fixes a CLI's permissions itself. */
+const PERMISSION_OPTIONS = [
+  '--permission-mode', '--dangerously-skip-permissions', '--allow-dangerously-skip-permissions',
+  '--mode', '--sandbox', '-s', '--full-auto', '--dangerously-bypass-approvals-and-sandbox',
+  '--allow-all-tools', '--allow-all', '--yolo', '--allow-tool', '--deny-tool',
+]
+
+/**
+ * A headless CLI cannot ask the user to approve a tool, so it denies every
+ * tool that needs approval. These options grant the CLI the file access the
+ * user chose for the Session instead; a route whose arguments already set
+ * permissions keeps them.
+ * @param kind - CLI dialect resolved for the route.
+ * @param args - Arguments resolved so far.
+ * @param sandbox - The Session's file access.
+ * @returns Options to append.
+ */
+function permissionArgs(kind: NonNullable<ExternalCliProviderProfile['cliType']>, args: readonly string[], sandbox: CliSandboxMode): readonly string[] {
+  if (kind === 'custom') return []
+  if (args.some(arg => PERMISSION_OPTIONS.some(name => arg === name || arg.startsWith(`${name}=`)))) return []
+  return PERMISSION_ARGS[kind][sandbox]
 }
 
 /**
@@ -281,11 +334,12 @@ function effortArgs(
 export async function* streamExternalCli(
   config: ExternalCliOptions,
   options: GenerateOptions,
-  cwd?: string,
+  session: CliSessionContext = {},
 ): AsyncIterable<StreamChunk> {
+  const { cwd, sandbox } = session
   const profile = config.providers?.[options.provider] ?? config.providers?.[options.model]
   const prompt = formatPrompt(options)
-  const { command, args } = resolveCommandAndArgs(config, options)
+  const { command, args } = resolveCommandAndArgs(config, options, sandbox)
   const agyStream = isAgyStream(args)
   const input = agyStream ? `${JSON.stringify({ event: 'user', message: { content: prompt } })}\n` : prompt
   const shell = profile?.shell ?? config.shell ?? false

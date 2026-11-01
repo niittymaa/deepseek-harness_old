@@ -14,7 +14,7 @@ import {
   type LlmResolvedModelInfo,
   type StreamChunk,
 } from '@deepseek-ai/dsh-llm'
-import type { ExternalCliModel, ExternalCliOptions, ExternalCliProviderProfile } from './config.ts'
+import type { CliSessionContext, ExternalCliModel, ExternalCliOptions, ExternalCliProviderProfile } from './config.ts'
 import { streamExternalCli } from './process.ts'
 import { cliEffortLevels, discoverCliModels, mergeModels } from './catalog.ts'
 
@@ -56,11 +56,12 @@ export class ExternalCliAdapter extends LlmAdapter {
   /** Catalog the last discovery read for each route, refreshed by the model menu. */
   private readonly catalogs = new Map<string, readonly ExternalCliModel[]>()
   /**
-   * The working directory of a Session, so the CLI's own tools act on the
-   * user's project as they do when the CLI runs in a terminal there. Unset or
-   * undefined runs the CLI in the app's directory.
+   * The working directory and file access of a Session, so the CLI's own
+   * tools act on the user's project with the access the user chose, as when
+   * the CLI runs in a terminal there. Unset runs the CLI in the app's
+   * directory with its own permission settings.
    */
-  resolveCwd?: (sessionId: string) => string | undefined
+  resolveSession?: (sessionId: string) => CliSessionContext
 
   /**
    * Create a new ExternalCliAdapter instance.
@@ -208,10 +209,10 @@ export class ExternalCliAdapter extends LlmAdapter {
    */
   override async *stream(options: GenerateOptions): AsyncIterable<StreamChunk> {
     const config = this.config
-    const cwd = options.sessionId === undefined ? undefined : this.resolveCwd?.(options.sessionId)
+    const session = options.sessionId === undefined ? {} : this.resolveSession?.(options.sessionId) ?? {}
     const profile = config.providers?.[options.provider]
     if (profile === undefined) {
-      yield* streamExternalCli(config, options, cwd)
+      yield* streamExternalCli(config, options, session)
       return
     }
     // A model the chat lists without saving it is served from a fresh catalog;
@@ -221,7 +222,7 @@ export class ExternalCliAdapter extends LlmAdapter {
     }
     yield* streamExternalCli({ ...config, providers: { ...config.providers,
       [options.provider]: { ...profile, models: this.catalog(options.provider, profile) },
-    } }, options, cwd)
+    } }, options, session)
   }
 
   /**

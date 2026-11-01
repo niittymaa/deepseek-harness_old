@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
-import { LlmRuntime } from '@deepseek-ai/dsh-llm'
+import { LlmRuntime, createUserMessage, type GenerateOptions } from '@deepseek-ai/dsh-llm'
 import { ExternalCliAdapter } from '../src/adapter.ts'
 import * as LlmExternalCli from '../src/index.ts'
 
@@ -80,5 +80,43 @@ describe('adapter model listing', () => {
   it('does not repeat a known CLI given as the top-level command', async () => {
     const adapter = new ExternalCliAdapter({ command: 'Claude' })
     expect((await adapter.listModels('external-cli')).map(model => model.id)).toEqual(['agy', 'codex', 'claude', 'copilot'])
+  })
+})
+
+describe('plugin Session file access', () => {
+  // A stand-in CLI that prints the options it received.
+  const printArgs = { command: process.execPath, cliType: 'claude' as const, args: ['-e', 'process.stdout.write(process.argv.slice(1).join(" "))', '--'] }
+  const turn = async (ctx: Context): Promise<string> => {
+    let text = ''
+    for await (const chunk of ctx.llm.stream({ provider: 'route', model: 'route', sessionId: 'known', messages: [
+      createUserMessage({ content: [{ type: 'text', text: 'go' }], source: { kind: 'user' } }),
+    ] } as unknown as GenerateOptions)) if (chunk.type === 'text-delta') text += chunk.text
+    return text
+  }
+  const withServices = (presets: unknown, shell?: unknown) => (ctx: Context): void => {
+    ctx.provide('sessions', { get: (id: string) => id === 'known' ? { id } : undefined } as never)
+    ctx.provide('permissionPresets', presets as never)
+    if (shell !== undefined) ctx.provide('shell', shell as never)
+  }
+
+  it('grants the CLI the access of the Session preset', async () => {
+    const ctx = await mount({ providers: { route: printArgs } }, withServices({
+      current: () => 'danger-full-access', resolve: (name: string) => ({ sandbox: name }),
+    }))
+    expect(await turn(ctx)).toBe('--permission-mode bypassPermissions')
+  })
+
+  it('falls back to the shell mode for a custom permission combination', async () => {
+    const ctx = await mount({ providers: { route: printArgs } }, withServices({
+      current: () => 'custom', resolve: () => { throw new Error('unknown preset') },
+    }, { sandboxMode: 'read-only' }))
+    expect(await turn(ctx)).toBe('--permission-mode plan')
+  })
+
+  it('leaves permissions to the CLI for a custom combination without a shell', async () => {
+    const ctx = await mount({ providers: { route: printArgs } }, withServices({
+      current: () => 'custom', resolve: () => { throw new Error('unknown preset') },
+    }))
+    expect(await turn(ctx)).toBe('')
   })
 })

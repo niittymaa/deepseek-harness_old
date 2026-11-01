@@ -11,7 +11,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import type { AdapterRegistrationHandle, DirectoryRegistrationHandle, LlmConfigurableProvider } from '@deepseek-ai/dsh-llm'
 import { ExternalCliAdapter } from './adapter.ts'
 import { discoverCliModels, mergeModels } from './catalog.ts'
-import type { Config, ExternalCliOptions, ExternalCliProviderProfile } from './config.ts'
+import type { CliSandboxMode, Config, ExternalCliOptions, ExternalCliProviderProfile } from './config.ts'
 
 export { ExternalCliAdapter, DEFAULT_CONTEXT_WINDOW } from './adapter.ts'
 export { Config, type ExternalCliOptions, type ExternalCliProviderProfile, type ExternalCliModel } from './config.ts'
@@ -55,13 +55,24 @@ export function apply(ctx: Context, config: PluginConfig = {}): void {
   let effectiveConfig = getEffectiveConfig()
   const primaryProvider = effectiveConfig.provider ?? 'external-cli'
   const adapter = new ExternalCliAdapter(effectiveConfig)
-  // Optional services, looked up per turn: a host without Sessions or a
-  // working directory runs the CLI in the app's directory.
-  adapter.resolveCwd = (sessionId) => {
-    const sessions = ctx.get('sessions') as { get(id: string): unknown } | undefined
+  // Optional services, looked up per turn: a host without Sessions, a
+  // working directory or permission presets runs the CLI in the app's
+  // directory with the CLI's own permission settings.
+  adapter.resolveSession = (sessionId) => {
+    const session = (ctx.get('sessions') as { get(id: string): unknown } | undefined)?.get(sessionId)
+    if (session === undefined) return {}
     const directory = ctx.get('workingDirectory') as { get(session: unknown): string } | undefined
-    const session = sessions?.get(sessionId)
-    return session === undefined || directory === undefined ? undefined : directory.get(session)
+    const presets = ctx.get('permissionPresets') as { current(session: unknown): string; resolve(name: string): { sandbox: CliSandboxMode } } | undefined
+    const shell = ctx.get('shell') as { sandboxMode: CliSandboxMode } | undefined
+    let sandbox: CliSandboxMode | undefined
+    if (presets !== undefined) {
+      // A custom knob combination names no preset; the shell's mode then applies.
+      try { sandbox = presets.resolve(presets.current(session)).sandbox } catch { sandbox = shell?.sandboxMode }
+    }
+    return {
+      ...directory === undefined ? {} : { cwd: directory.get(session) },
+      ...sandbox === undefined ? {} : { sandbox },
+    }
   }
 
   let adapterRegistration: AdapterRegistrationHandle | undefined
